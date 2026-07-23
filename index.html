@@ -347,6 +347,34 @@
     .range-row span { font-size: 11px; font-family: var(--font-mono); color: var(--ink2); }
     input[type="range"] { width: 100%; accent-color: var(--rust); cursor: pointer; }
 
+    /* ── Copy fallback overlay ──────────────────────── */
+    .copy-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 500;
+      padding: 20px;
+    }
+    .copy-box {
+      background: var(--paper);
+      border: 2px solid var(--ink);
+      border-radius: var(--r);
+      padding: 20px;
+      max-width: 360px;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .copy-box img { max-width: 100%; border-radius: 4px; border: 1px solid var(--border); }
+    .copy-box-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink2);
+      line-height: 1.5;
+    }
+    .copy-box-actions { display: flex; gap: 8px; }
+
     /* ── Toast ──────────────────────────────────────── */
     .toast {
       position: fixed;
@@ -735,15 +763,56 @@
     });
   }
 
+  /* Get a proper Blob from whatever is currently rendered */
+  async function getBlob() {
+    if (mode === 'qr') {
+      // Pull directly from the canvas element — always a real Blob, never a Buffer
+      const canvas = document.querySelector('#qr-container canvas');
+      if (canvas) return new Promise(res => canvas.toBlob(res, 'image/png'));
+      // Fallback to library method
+      return qrCode.getRawData('png');
+    } else {
+      const c = await barCanvas();
+      return new Promise(res => c.toBlob(res, 'image/png'));
+    }
+  }
+
   async function copyImage() {
     if (!hasContent) return;
-    try {
-      let blob;
-      if (mode === 'qr') blob = await qrCode.getRawData('png');
-      else { const c = await barCanvas(); blob = await new Promise(r => c.toBlob(r, 'image/png')); }
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      toast('copied ✓');
-    } catch(e) { toast('copy failed — use download instead'); }
+    let blob;
+    try { blob = await getBlob(); } catch(e) { toast('could not read image data'); return; }
+
+    // Try modern clipboard API (needs HTTPS or localhost; blocked on file://)
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        toast('copied ✓');
+        return;
+      } catch(e) {
+        // Permission denied or not a secure context — fall through to modal
+      }
+    }
+
+    // Fallback: show the image in an overlay so user can right-click → Copy Image
+    showCopyFallback(blob);
+  }
+
+  function showCopyFallback(blob) {
+    const url = URL.createObjectURL(blob);
+    const overlay = document.createElement('div');
+    overlay.className = 'copy-overlay';
+    overlay.innerHTML = `
+      <div class="copy-box">
+        <img src="${url}" alt="generated code" />
+        <p class="copy-box-label">clipboard access is blocked on local files.<br>right-click the image above → <strong>copy image</strong></p>
+        <div class="copy-box-actions">
+          <button class="btn primary" style="flex:1" onclick="this.closest('.copy-overlay').remove(); URL.revokeObjectURL('${url}')">close</button>
+        </div>
+      </div>`;
+    overlay.addEventListener('click', e => {
+      if (e.target === overlay) { overlay.remove(); URL.revokeObjectURL(url); }
+    });
+    document.body.appendChild(overlay);
   }
 
   async function downloadImage() {
